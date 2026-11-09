@@ -1,0 +1,202 @@
+/* ── Page background ─────────────────────────────────────────────────────── */
+body {
+    background-color: #0f0e17 !important;
+}
+
+/* ── Dash 4.x RangeSlider ────────────────────────────────────────────────── */
+.dash-slider-root {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    cursor: pointer;
+    user-select: none;
+    touch-action: none;
+    padding: 4px 0;
+}
+
+.dash-slider-track {
+    background-color: #2a2a4a !important;
+    border-radius: 4px !important;
+    flex-grow: 1 !important;
+    height: 6px !important;
+    position: relative !important;
+}
+
+.dash-slider-range {
+    background-color: #52b788 !important;
+    border-radius: 4px !important;
+    height: 100% !important;
+    position: absolute !important;
+}
+
+.dash-slider-thumb,
+[class^="dash-slider-thumb"] {
+    display: block !important;
+    width: 18px !important;
+    height: 18px !important;
+    background-color: #52b788 !important;
+    border: 2px solid #3da670 !important;
+    border-radius: 50% !important;
+    cursor: grab !important;
+    outline: none !important;
+    transition: box-shadow 0.15s ease !important;
+}
+
+.dash-slider-thumb:hover,
+.dash-slider-thumb:focus,
+.dash-slider-thumb:active,
+[class^="dash-slider-thumb"]:hover,
+[class^="dash-slider-thumb"]:focus {
+    box-shadow: 0 0 0 5px rgba(82, 183, 136, 0.3) !important;
+    border-color: #e8e8e4 !important;
+}
+
+/* Marks */
+.dash-slider-mark {
+    color: #aaa !important;
+    font-size: 11px !important;
+    white-space: nowrap !important;
+    background: transparent !important;
+}
+
+.dash-slider-mark-outside-selection {
+    color: #666 !important;
+}
+
+/* Dots */
+.dash-slider-dot {
+    background-color: #2a2a4a !important;
+    border: 2px solid #52b788 !important;
+    border-radius: 50% !important;
+}
+
+.dash-slider-dot-outside-selection {
+    border-color: #3a3a5a !important;
+}
+
+/* Tooltip */
+.dash-slider-tooltip {
+    background-color: #16213e !important;
+    color: #52b788 !important;
+    border: 1px solid #2a2a4a !important;
+    border-radius: 4px !important;
+    font-size: 11px !important;
+    padding: 2px 6px !important;
+    pointer-events: none !important;
+}
+
+/* Input fields for direct value entry */
+.dash-input-container,
+.dash-range-slider-input {
+    background-color: #16213e !important;
+    color: #e8e8e4 !important;
+    border: 1px solid #2a2a4a !important;
+    border-radius: 4px !important;
+}
+
+/* ── Dash 4.x Dropdown ───────────────────────────────────────────────────── */
+.dash-dropdown {
+    background-color: #16213e !important;
+    color: #e8e8e4 !important;
+    border-radius: 6px !important;
+}
+
+/* Trigger button (the visible box with selected value + arrow) */
+.dash-dropdown-grid-container.dash-dropdown-trigger,
+.dash-dropdown-grid-container {
+    background-color: #16213e !important;
+    border: 1px solid #2a2a4a !important;
+    border-radius: 6px !important;
+    color: #e8e8e4 !important;
+    padding: 6px 10px !important;
+    cursor: pointer !important;
+}
+
+.dash-dropdown-grid-container:hover {
+    border-color: #52b788 !important;
+}
+
+/* Selected value text */
+.dash-dropdown-value,
+.dash-dropdown-value-item {
+    color: #e8e8e4 !important;
+    background: transparent !important;
+}
+
+/* Placeholder */
+.dash-dropdown-value.dash-dropdown-placeholder {
+    color: #666 !important;
+}
+
+/* Trigger icon (arrow) */
+.dash-dropdown-trigger-icon {
+    color: #52b788 !important;
+    fill: #52b788 !important;
+}
+
+/* Dropdown content panel */
+.dash-dropdown-content {
+    background-color: #16213e !important;
+    border: 1px solid #2a2a4a !important;
+    border-radius: 6px !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+    z-index: 9999 !important;
+}
+
+/* Search box inside dropdown */
+.dash-dropdown-search-container {
+    background-color: #0f0e17 !important;
+    border-bottom: 1px solid #2a2a4a !important;
+}
+
+.dash-dropdown-search {
+    background-color: transparent !important;
+    color: #e8e8e4 !important;
+    border: none !important;
+    outline: none !important;
+}
+
+.dash-dropdown-search::placeholder {
+    color: #666 !important;
+}
+
+/* Options list */
+.dash-dropdown-options {
+    background-color: #16213e !important;
+}
+
+.dash-dropdown-option {
+    color: #e8e8e4 !important;
+    background-color: #16213e !important;
+    padding: 8px 12px !important;
+    cursor: pointer !important;
+}
+
+.dash-dropdown-option:hover,
+.dash-dropdown-option:focus {
+    background-color: #0f3460 !important;
+    color: #52b788 !important;
+}
+
+/* Clear button */
+.dash-dropdown-clear {
+    color: #888 !important;
+}
+
+.dash-dropdown-clear:hover {
+    color: #e94560 !important;
+}
+
+/* ── Active tab indicator ─────────────────────────────────────────────────── */
+.nav-tabs .nav-link.active {
+    border-bottom: 2px solid #52b788 !important;
+    color: #52b788 !important;
+}
+
+/* Charts whose points open the activity detail on click */
+.clickable-graph .nsewdrag,
+.clickable-graph .point,
+.clickable-graph .bars path {
+    cursor: pointer !important;
+}

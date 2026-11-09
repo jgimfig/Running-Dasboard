@@ -1,0 +1,16 @@
+services:
+  running-dashboard:
+    build: .
+    image: running-dashboard:latest
+    container_name: running-dashboard
+    ports:
+      - "8050:8050"
+    volumes:
+      # Garmin .fit files + apple_health_export/ (read-only, never baked into the image)
+      - ./fit_raw:/data:ro
+      # Apple Health parse cache, persisted across restarts
+      - health-cache:/cache
+    restart: unless-stopped
+
+volumes:
+  health-cache:

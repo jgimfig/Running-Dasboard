@@ -1,0 +1,15 @@
+# Personal data is mounted at runtime, never copied into the image
+fit_raw/
+*.zip
+*.fit
+*.pkl
+
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+start.sh
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

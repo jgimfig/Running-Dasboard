@@ -1,0 +1,12 @@
+# Personal health/training data: never commit
+fit_raw/
+*.fit
+*.zip
+*.pkl
+activity_tags.json
+
+# Environment and caches
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
