@@ -73,7 +73,8 @@ docker compose down           # parar
 ```
 
 - La imagen **solo contiene el código**. La carpeta `fit_raw/` (FIT + `apple_health_export/`) se monta en
-  `/data` en modo solo lectura, así que los datos personales nunca quedan dentro de la imagen.
+  `/data`, así que los datos personales nunca quedan dentro de la imagen. Está montada con permiso de escritura
+  porque ahí se guardan las etiquetas (`activity_tags.json`).
 - El primer arranque tarda ~35 s porque parsea el XML de Apple Health; el resultado se guarda en el volumen
   `health-cache` y los siguientes arranques tardan ~10 s.
 - Se sirve con `gunicorn` (1 worker, 4 threads). Variables de entorno: `DATA_DIR` (por defecto `/data`)
@@ -116,8 +117,8 @@ Versiones fijadas en `requirements.txt` (probadas con Python 3.13):
 
 ### Etiquetas
 Cada sesión puede tener **varias** etiquetas (p. ej. «Trail» + «Tirada larga»). El filtro muestra las sesiones que tengan
-**cualquiera** de las etiquetas elegidas. Se guardan en `activity_tags.json` (en Docker, en el volumen `/cache`,
-variable `TAGS_FILE` para cambiar la ruta), así que sobreviven a reinicios y reconstrucciones de la imagen.
+**cualquiera** de las etiquetas elegidas. Se guardan en `fit_raw/activity_tags.json` (variable `TAGS_FILE` para cambiar la ruta), así que sobreviven a
+reinicios y reconstrucciones de la imagen y **viajan con la carpeta `fit_raw/`** al copiarla a otro equipo. No se sube a git.
 La tabla de edición ignora el filtro de etiquetas para que las filas no desaparezcan mientras editas.
 
 ## Añadir nuevas actividades

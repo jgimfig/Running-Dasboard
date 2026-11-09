@@ -284,10 +284,9 @@ DEFAULT_TAGS = ["Entreno", "Series", "Carrera", "Trail", "Tirada larga", "Recupe
 UNTAGGED = "Sin etiqueta"  # pseudo-tag used by the filter for sessions without a label
 MAX_TAG_LEN = 30
 
-# Tags live next to the Apple Health cache: in Docker that is the writable /cache volume
-# (the data mount is read-only); locally it falls back to the project directory.
-TAGS_FILE = Path(os.environ.get("TAGS_FILE",
-                                Path(os.environ.get("CACHE_DIR", Path(__file__).parent)) / "activity_tags.json"))
+# Tags live inside the data folder (fit_raw/), so copying that folder to another machine
+# carries the labels with it. TAGS_FILE overrides the location. The folder must be writable.
+TAGS_FILE = Path(os.environ.get("TAGS_FILE", FIT_DIR / "activity_tags.json"))
 _TAGS_LOCK = threading.Lock()
 
 

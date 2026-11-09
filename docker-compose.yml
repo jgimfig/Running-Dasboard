@@ -6,8 +6,9 @@ services:
     ports:
       - "8050:8050"
     volumes:
-      # Garmin .fit files + apple_health_export/ (read-only, never baked into the image)
-      - ./fit_raw:/data:ro
+      # Garmin .fit files + apple_health_export/ + activity_tags.json (never baked into the image).
+      # Writable because the session tags are saved here.
+      - ./fit_raw:/data
       # Apple Health parse cache, persisted across restarts
       - health-cache:/cache
     restart: unless-stopped
