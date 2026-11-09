@@ -11,6 +11,10 @@ services:
       - ./fit_raw:/data
       # Apple Health parse cache, persisted across restarts
       - health-cache:/cache
+    environment:
+      # Optional HR zone overrides (bpm). Empty = auto (max of all sessions / 90-day median resting HR).
+      HR_MAX: "${HR_MAX:-}"
+      HR_REST: "${HR_REST:-}"
     restart: unless-stopped
 
 volumes:

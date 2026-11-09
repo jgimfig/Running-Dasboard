@@ -243,13 +243,13 @@ def load_all_data():
     return sessions_df, laps_df, records_df
 
 
-def compute_hr_zone_distribution(records_df: pd.DataFrame, max_hr: float) -> pd.DataFrame:
+def compute_hr_zone_distribution(records_df: pd.DataFrame, max_hr: float, rest_hr: float = REST_HR) -> pd.DataFrame:
     """Calculate minutes spent in each HR zone across all activities."""
     if records_df.empty or max_hr == 0:
         return pd.DataFrame({"zone": HR_ZONE_LABELS, "minutes": [0] * 5})
 
     df = records_df.dropna(subset=["heart_rate"]).copy()
-    df["zone_num"] = df["heart_rate"].apply(lambda hr: hr_zone(hr, max_hr))
+    df["zone_num"] = df["heart_rate"].apply(lambda hr: hr_zone(hr, max_hr, rest_hr))
     zone_counts = df.groupby("zone_num").size().reset_index(name="records")
     # ~1 record per second → convert to minutes
     zone_counts["minutes"] = zone_counts["records"] / 60.0
@@ -364,6 +364,142 @@ def add_custom_tag(label: str):
         raw["custom"] = list(raw.get("custom") or []) + [label]
         _write_tags_file(raw)
     return label, None
+
+
+# ---------------------------------------------------------------------------
+# Interval ("series") detection: separate work reps from recovery
+# ---------------------------------------------------------------------------
+SERIES_TAG = "Series"          # sessions carrying this tag are analysed for intervals
+SMOOTH_SEC = 7                 # speed smoothing window (seconds)
+MIN_REP_SEC = 15               # shorter fast bursts are ignored
+MERGE_GAP_SEC = 5              # slow gaps shorter than this are merged into the surrounding rep
+MIN_SPEED_RATIO = 1.3          # work speed must be at least this much faster than recovery
+MIN_REPS = 2
+MOVING_SPEED_MPS = 0.8         # below this the runner is considered stopped
+MAX_RECORD_GAP_SEC = 5         # longer holes between records are treated as standing still
+SHORT_BLOCK_FACTOR = 0.4       # blocks shorter than this share of the typical rep are noise
+LONG_BLOCK_FACTOR = 2.2        # a first/last block this many times longer than the typical rep is warm-up/cool-down
+
+
+def _otsu_threshold(values: np.ndarray) -> float:
+    """Speed threshold that best splits the samples into a slow and a fast group (Otsu)."""
+    candidates = np.linspace(values.min(), values.max(), 80)[1:-1]
+    best_thr, best_var = np.nan, -1.0
+    for thr in candidates:
+        lo, hi = values[values <= thr], values[values > thr]
+        if len(lo) == 0 or len(hi) == 0:
+            continue
+        w_lo, w_hi = len(lo) / len(values), len(hi) / len(values)
+        var = w_lo * w_hi * (lo.mean() - hi.mean()) ** 2
+        if var > best_var:
+            best_thr, best_var = thr, var
+    return best_thr
+
+
+def detect_intervals(act_records: pd.DataFrame):
+    """
+    Find the fast "work" repetitions of one interval session.
+
+    Works on a 1 Hz grid: speed is smoothed, split into slow/fast with an Otsu threshold and the
+    fast runs become reps. Returns (reps_df, summary) or (None, None) when the session does not
+    show two clearly different speeds or has fewer than MIN_REPS reps (e.g. a steady run).
+    """
+    d = act_records.dropna(subset=["timestamp", "distance_km"]).sort_values("timestamp")
+    if len(d) < 60:
+        return None, None
+    secs = (d["timestamp"] - d["timestamp"].iloc[0]).dt.total_seconds().to_numpy()
+    secs, uniq = np.unique(secs, return_index=True)
+    d = d.iloc[uniq]
+    n = int(secs[-1]) + 1
+    if n < 120:
+        return None, None
+    grid = np.arange(n, dtype=float)
+    # Stopped / walking samples (no valid pace) count as speed 0
+    speed = np.where(d["pace_min_km"].isna(), 0.0, d["speed_mps"].fillna(0.0)).astype(float)
+    speed_g = np.interp(grid, secs, speed)
+    # Recording gaps (watch auto-pause, lost signal) are time without movement, not interpolated speed
+    right = np.clip(np.searchsorted(secs, grid), 1, len(secs) - 1)
+    in_gap = (secs[right] - secs[right - 1]) > MAX_RECORD_GAP_SEC
+    speed_g[in_gap & ~np.isin(grid, secs)] = 0.0
+    dist_g = np.interp(grid, secs, d["distance_km"].to_numpy(float))
+    hr = d["heart_rate"].to_numpy(float)
+    ok = ~np.isnan(hr)
+    hr_g = np.interp(grid, secs[ok], hr[ok]) if ok.sum() >= 2 else np.full(n, np.nan)
+
+    smooth = pd.Series(speed_g).rolling(SMOOTH_SEC, center=True, min_periods=1).mean().to_numpy()
+    # The threshold is learned from moving samples only: long stops must not decide where
+    # "slow" ends (stopped time is always recovery).
+    moving = smooth >= MOVING_SPEED_MPS
+    if moving.sum() < 60 or smooth[moving].max() - smooth[moving].min() < 0.5:
+        return None, None
+    thr = _otsu_threshold(smooth[moving])
+    if np.isnan(thr):
+        return None, None
+    fast = smooth > thr
+    share_fast = fast.mean()
+    if share_fast < 0.08 or share_fast > 0.92:
+        return None, None
+    slow_moving = moving & ~fast
+    slow_mean = smooth[slow_moving].mean() if slow_moving.any() else MOVING_SPEED_MPS
+    if smooth[fast].mean() / max(slow_mean, MOVING_SPEED_MPS) < MIN_SPEED_RATIO:
+        return None, None
+
+    # Runs of fast samples -> [start, end) in seconds
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], fast.astype(int), [0]))))
+    runs = [[int(a), int(b)] for a, b in zip(edges[::2], edges[1::2])]
+    merged = []
+    for run in runs:
+        if merged and run[0] - merged[-1][1] <= MERGE_GAP_SEC:
+            merged[-1][1] = run[1]
+        else:
+            merged.append(run)
+    merged = [r for r in merged if r[1] - r[0] >= MIN_REP_SEC]
+    # Tiny blips (GPS noise, a short surge) are much shorter than a real rep
+    if len(merged) >= MIN_REPS:
+        typical = float(np.median([r[1] - r[0] for r in merged]))
+        merged = [r for r in merged if r[1] - r[0] >= SHORT_BLOCK_FACTOR * typical]
+    # A steady warm-up / cool-down is faster than the threshold too: drop it when it is much
+    # longer than the typical rep
+    for edge in (0, -1):
+        if len(merged) > MIN_REPS:
+            others = [r[1] - r[0] for i, r in enumerate(merged) if i != (edge % len(merged))]
+            if merged[edge][1] - merged[edge][0] > LONG_BLOCK_FACTOR * float(np.median(others)):
+                merged.pop(edge)
+    if len(merged) < MIN_REPS:
+        return None, None
+
+    rows, prev_end = [], None
+    for i, (a, b) in enumerate(merged, 1):
+        b = min(b, n - 1)
+        dur, km = b - a, dist_g[b] - dist_g[a]
+        if dur <= 0 or km <= 0:
+            continue
+        rows.append({
+            "rep": i, "start_sec": a, "end_sec": b, "start_km": dist_g[a], "end_km": dist_g[b],
+            "duration_sec": dur, "distance_km": km, "pace_min_km": dur / 60.0 / km,
+            "avg_hr": float(np.nanmean(hr_g[a:b])) if not np.isnan(hr_g[a:b]).all() else np.nan,
+            "rest_before_sec": (a - prev_end) if prev_end is not None else np.nan,
+        })
+        prev_end = b
+    if len(rows) < MIN_REPS:
+        return None, None
+    reps = pd.DataFrame(rows)
+    reps["rep"] = range(1, len(reps) + 1)
+
+    work_sec, work_km = reps["duration_sec"].sum(), reps["distance_km"].sum()
+    hr_w = (reps["avg_hr"] * reps["duration_sec"]).sum() / reps.loc[reps["avg_hr"].notna(), "duration_sec"].sum() \
+        if reps["avg_hr"].notna().any() else np.nan
+    summary = {
+        "n_reps": len(reps),
+        "work_pace_min_km": work_sec / 60.0 / work_km,
+        "work_hr": hr_w,
+        "avg_rep_sec": reps["duration_sec"].mean(),
+        "avg_rep_km": reps["distance_km"].mean(),
+        "rest_sec": float(reps["rest_before_sec"].sum()),
+        "avg_rest_sec": float(reps["rest_before_sec"].mean()),
+        "threshold_pace_min_km": 1000.0 / thr / 60.0 if thr > 0 else np.nan,
+    }
+    return reps, summary
 
 
 _APPLE_HEALTH_XML = FIT_DIR / "apple_health_export" / "exportación.xml"

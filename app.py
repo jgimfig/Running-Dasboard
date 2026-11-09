@@ -1,5 +1,7 @@
 """Running Dashboard — Dash application to analyze Garmin FIT training data."""
 
+import os
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,6 +9,7 @@ import dash
 import dash_bootstrap_components as dbc
 from dash import dcc, html, Input, Output, State, ALL, ctx, no_update
 from datetime import date, timedelta
+from functools import lru_cache
 from data_loader import (
     load_all_data,
     load_apple_health_data,
@@ -23,6 +26,8 @@ from data_loader import (
     HR_ZONE_COLORS,
     REST_HR,
     karvonen_boundaries,
+    detect_intervals,
+    SERIES_TAG,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +42,28 @@ hrv_df, rhr_df, vo2_df = load_apple_health_data()
 print(f"  {len(hrv_df)} HRV days | {len(rhr_df)} RHR days | {len(vo2_df)} VO2Max records")
 
 GLOBAL_MAX_HR = int(sessions_df["max_hr"].max()) if not sessions_df.empty else 200
+
+
+def _env_number(name: str):
+    """Return a positive number from the environment, or None when unset/invalid."""
+    try:
+        value = float(os.environ.get(name, ""))
+        return value if value > 0 else None
+    except ValueError:
+        return None
+
+
+# HR zones use FIXED values so they do not move when the date/tag filters change.
+# Override with the HR_MAX / HR_REST environment variables (e.g. from a lab test or your watch).
+HR_MAX = int(_env_number("HR_MAX") or GLOBAL_MAX_HR)
+if _env_number("HR_REST"):
+    HR_REST = int(_env_number("HR_REST"))
+elif not rhr_df.empty:
+    _recent = rhr_df[rhr_df["day"] >= rhr_df["day"].max() - pd.Timedelta(days=90)]["resting_hr"]
+    HR_REST = int(round(_recent.median()))  # median of the last 90 days of Apple Health data
+else:
+    HR_REST = REST_HR
+print(f"  HR zones: max {HR_MAX} bpm, rest {HR_REST} bpm (Karvonen)")
 
 PLOTLY_TEMPLATE = "plotly_dark"
 CARD_BG = "#16213e"
@@ -99,11 +126,24 @@ def default_date_range():
     return [start, TOTAL_DAYS]
 
 
+@lru_cache(maxsize=None)
+def series_info(name: str):
+    """(reps_df, summary) of the detected work reps of one session, or (None, None). Cached: FIT data is static."""
+    return detect_intervals(records_df[records_df["activity"] == name])
+
+
+def pace_labels(df):
+    """Formatted pace per row, flagged when it is the work pace of an interval session."""
+    flags = df["series_adjusted"] if "series_adjusted" in df.columns else [False] * len(df)
+    return [format_pace(p) + (" (series)" if f else "") for p, f in zip(df["avg_pace_min_km"], flags)]
+
+
 def filter_sessions(slider_value, dist_range, tag_filter=None):
     """Return sessions filtered by date and distance sliders, and optionally by tag.
 
     The returned frame has a "tags" column (list of labels, empty when the session has none).
-    A session matches when it has ANY of the selected tags; UNTAGGED matches sessions without labels.
+    A session matches when it has ALL the selected tags; UNTAGGED matches sessions without labels
+    (so combining it with a real tag matches nothing).
     An empty/None tag_filter means "all tags".
     """
     start = offset_to_date(slider_value[0])
@@ -119,9 +159,23 @@ def filter_sessions(slider_value, dist_range, tag_filter=None):
     sdf["tags"] = [assignments.get(n, []) for n in sdf["name"]]
     if tag_filter:
         wanted = set(tag_filter)
-        keep = [(set(t) & wanted) or (UNTAGGED in wanted and not t) for t in sdf["tags"]]
-        sdf = sdf[[bool(k) for k in keep]]
+        want_untagged = UNTAGGED in wanted
+        required = wanted - {UNTAGGED}
+        keep = [required <= set(t) and (not want_untagged or not t) for t in sdf["tags"]]
+        sdf = sdf[keep]
     sdf = sdf.reset_index(drop=True)
+    # Sessions tagged "Series": use the pace/HR of the work reps only, so recoveries do not drag
+    # the average down. The whole-session values are kept in session_* columns.
+    sdf["session_pace_min_km"] = sdf["avg_pace_min_km"]
+    sdf["session_avg_hr"] = sdf["avg_hr"]
+    sdf["series_adjusted"] = False
+    for i in sdf.index[[SERIES_TAG in t for t in sdf["tags"]]]:
+        _reps, summ = series_info(sdf.at[i, "name"])
+        if summ is not None:
+            sdf.at[i, "avg_pace_min_km"] = summ["work_pace_min_km"]
+            if pd.notna(summ["work_hr"]):
+                sdf.at[i, "avg_hr"] = summ["work_hr"]
+            sdf.at[i, "series_adjusted"] = True
     sdf["activity_num"] = range(1, len(sdf) + 1)
     return sdf
 
@@ -267,7 +321,7 @@ def build_overview(sdf, rdf):
             line=dict(color="rgba(255,255,255,0.15)", width=1),
             hovertemplate="%{x|%d/%m/%Y}<br>Ritmo: %{customdata[0]}/km<br>FC: %{customdata[1]} bpm<extra>%{text}</extra>",
             customdata=np.column_stack([
-                [format_pace(p) for p in df_v["avg_pace_min_km"]],
+                pace_labels(df_v),
                 df_v["avg_hr"].astype(int),
             ]),
             text=df_v["name"],
@@ -340,7 +394,13 @@ def build_overview(sdf, rdf):
 
     pace_str = format_pace(avg_pace) + "/km" if not np.isnan(avg_pace) else "—"
 
+    n_series = int(sdf["series_adjusted"].sum()) if "series_adjusted" in sdf.columns else 0
+    series_note = dbc.Row(dbc.Col(html.P(
+        f"{n_series} sesión(es) con etiqueta «{SERIES_TAG}» muestran el ritmo y la FC de los tramos de trabajo "
+        "(sin los descansos).", className="text-muted mb-2", style={"fontSize": "0.8rem"}))) if n_series else None
+
     return dbc.Container([
+        *([series_note] if series_note is not None else []),
         dbc.Row([
             dbc.Col(kpi_card("Kilómetros totales", f"{total_km:.1f} km"), md=2),
             dbc.Col(kpi_card("Actividades", str(n_acts)), md=2),
@@ -376,7 +436,7 @@ def build_progression(sdf):
                 x=df2["start_time"], y=df2[y_col],
                 mode="markers", marker=dict(color=color, size=8),
                 hovertemplate="%{x|%d/%m/%Y}<br>" + name + ": %{customdata}<extra>%{text}</extra>",
-                customdata=[format_pace(v) for v in df2[y_col]] if "pace" in y_col else df2[y_col].round(1),
+                customdata=pace_labels(df2) if y_col == "avg_pace_min_km" else df2[y_col].round(1),
                 text=df2["name"], name=name,
             ))
             fig.add_trace(go.Scatter(
@@ -434,7 +494,7 @@ def build_progression(sdf):
                         colorbar=dict(title="Actividad #", thickness=10, len=0.7)),
             hovertemplate="%{customdata[2]}<br>FC: %{x} bpm<br>Ritmo: %{customdata[0]}/km"
                           "<br>%{customdata[1]:.1f} km<extra>%{text}</extra>",
-            customdata=list(zip([format_pace(p) for p in df_eff["avg_pace_min_km"]],
+            customdata=list(zip(pace_labels(df_eff),
                                 df_eff["distance_km"],
                                 df_eff["start_time"].dt.strftime("%d/%m/%Y"))),
             text=df_eff["name"],
@@ -463,13 +523,13 @@ def build_hr(sdf, ldf, rdf):
     if sdf.empty:
         return html.Div("Sin actividades en el período seleccionado.", className="p-4 text-muted")
 
-    max_hr = int(sdf["max_hr"].max()) if not sdf["max_hr"].isna().all() else GLOBAL_MAX_HR
-    zd = compute_hr_zone_distribution(rdf, max_hr)
+    max_hr = HR_MAX
+    zd = compute_hr_zone_distribution(rdf, max_hr, HR_REST)
 
     # Zone bar
     fig_zones = go.Figure()
     total_z = zd["minutes"].sum()
-    bounds = karvonen_boundaries(max_hr)
+    bounds = karvonen_boundaries(max_hr, HR_REST)
     z_ranges = [
         f"< {int(bounds[0])}",
         f"{int(bounds[0])}–{int(bounds[1])}",
@@ -578,7 +638,7 @@ def build_hr(sdf, ldf, rdf):
     z45_min = zd.loc[zd["zone_num"].isin([4, 5]), "minutes"].sum() if "zone_num" in zd.columns else 0
     avg_hr_val = sdf["avg_hr"].mean()
 
-    bounds = karvonen_boundaries(max_hr)
+    bounds = karvonen_boundaries(max_hr, HR_REST)
     z_ranges = [
         f"< {int(bounds[0])} bpm",
         f"{int(bounds[0])}–{int(bounds[1])} bpm",
@@ -589,7 +649,7 @@ def build_hr(sdf, ldf, rdf):
 
     return dbc.Container([
         dbc.Row([
-            dbc.Col(kpi_card("FC Máxima", f"{max_hr} bpm", f"Reposo: {REST_HR} bpm · Karvonen", ACCENT2), md=3),
+            dbc.Col(kpi_card("FC Máxima", f"{max_hr} bpm", f"Reposo: {HR_REST} bpm · Karvonen", ACCENT2), md=3),
             dbc.Col(kpi_card("FC media global", f"{avg_hr_val:.0f} bpm" if not np.isnan(avg_hr_val) else "—", "", ACCENT), md=3),
             dbc.Col(kpi_card("Tiempo Z2 (aeróbico)", f"{z2_min:.0f} min",
                              f"{z_ranges[1]} · {z2_min / total_z * 100:.0f}% del total" if total_z > 0 else "",
@@ -654,7 +714,7 @@ def build_dynamics(sdf):
                         colorbar=dict(title="FC", thickness=10)),
             hovertemplate="%{customdata[1]}<br>Cadencia: %{x:.0f} spm<br>Ritmo: %{customdata[0]}/km"
                           "<extra>%{text}</extra>",
-            customdata=list(zip([format_pace(p) for p in df_dyn["avg_pace_min_km"]],
+            customdata=list(zip(pace_labels(df_dyn),
                                 df_dyn["start_time"].dt.strftime("%d/%m/%Y"))),
             text=df_dyn["name"],
         ))
@@ -853,7 +913,7 @@ def build_tags_table(sdf):
             html.Td(r["start_time"].strftime("%d/%m/%Y %H:%M")),
             html.Td(r["name"]),
             html.Td(f"{r['distance_km']:.1f} km"),
-            html.Td(format_pace(r["avg_pace_min_km"]) + "/km"),
+            html.Td(format_pace(r["avg_pace_min_km"]) + "/km" + (" (series)" if r["series_adjusted"] else "")),
             html.Td(dcc.Dropdown(
                 id={"type": "tag-select", "index": r["name"]},
                 options=options,
@@ -1257,6 +1317,39 @@ def open_clicked_activity(_click_data, options):
     return "tab-detail", options, name
 
 
+def build_series_block(name):
+    """KPIs and rep table for a session tagged "Series" (empty when it is not)."""
+    if SERIES_TAG not in load_tag_state()["assignments"].get(name, []):
+        return None
+    reps, summ = series_info(name)
+    if summ is None:
+        return html.P(f"Etiquetada como «{SERIES_TAG}», pero no se detectan repeticiones "
+                      "(el ritmo es uniforme).", className="text-muted", style={"fontSize": "0.85rem"})
+    rows = [html.Tr([
+        html.Td(int(r["rep"])),
+        html.Td(format_duration(r["duration_sec"])),
+        html.Td(f"{r['distance_km'] * 1000:.0f} m"),
+        html.Td(format_pace(r["pace_min_km"]) + "/km"),
+        html.Td(f"{r['avg_hr']:.0f} bpm" if pd.notna(r["avg_hr"]) else "—"),
+        html.Td(format_duration(r["rest_before_sec"]) if pd.notna(r["rest_before_sec"]) else "—"),
+    ]) for _, r in reps.iterrows()]
+    return dbc.Container([
+        section_title("Series (solo tramos de trabajo)"),
+        dbc.Row([
+            dbc.Col(kpi_card("Ritmo de series", format_pace(summ["work_pace_min_km"]) + "/km", "sin descansos", ACCENT), md=2),
+            dbc.Col(kpi_card("FC en series", f"{summ['work_hr']:.0f} bpm" if pd.notna(summ["work_hr"]) else "—", "", ACCENT2), md=2),
+            dbc.Col(kpi_card("Repeticiones", str(summ["n_reps"]), "", "#F4D03F"), md=2),
+            dbc.Col(kpi_card("Repetición media", format_duration(summ["avg_rep_sec"]),
+                             f"{summ['avg_rep_km'] * 1000:.0f} m", "#8ECAE6"), md=2),
+            dbc.Col(kpi_card("Descanso medio", format_duration(summ["avg_rest_sec"]), "entre repeticiones", "#8ECAE6"), md=2),
+        ], className="g-2 mb-3"),
+        dbc.Table([html.Thead(html.Tr([html.Th(h) for h in ["#", "Duración", "Distancia", "Ritmo", "FC", "Descanso previo"]])),
+                   html.Tbody(rows)],
+                  striped=True, bordered=False, hover=True, size="sm",
+                  style={"color": TEXT, "backgroundColor": CARD_BG, "borderRadius": "8px"}),
+    ], fluid=True, className="mb-3")
+
+
 @app.callback(
     Output("detail-kpis", "children"),
     Output("detail-laps-table", "children"),
@@ -1284,6 +1377,15 @@ def update_detail(selected_activity):
     act_laps = laps_df[laps_df["activity"] == selected_activity].copy()
     act_records = records_df[records_df["activity"] == selected_activity].copy()
 
+    # Interval sessions: headline pace/HR are those of the work reps; the whole-session figures go in the subtitle
+    summ_s = None
+    if SERIES_TAG in load_tag_state()["assignments"].get(selected_activity, []):
+        summ_s = series_info(selected_activity)[1]
+    disp_pace = summ_s["work_pace_min_km"] if summ_s else row["avg_pace_min_km"]
+    disp_hr = summ_s["work_hr"] if summ_s and pd.notna(summ_s["work_hr"]) else row.get("avg_hr")
+    pace_sub = f"series · sesión completa {format_pace(row['avg_pace_min_km'])}/km" if summ_s else ""
+    hr_sub = f"series · sesión completa {row['avg_hr']:.0f} bpm" if summ_s and pd.notna(row.get("avg_hr")) else ""
+
     asc_v = row.get("total_ascent_m")
     desc_v = row.get("total_descent_m")
     asc_str = f"+{int(asc_v)} m" if pd.notna(asc_v) and (asc_v or 0) > 0 else "—"
@@ -1293,10 +1395,10 @@ def update_detail(selected_activity):
         dbc.Row([
             dbc.Col(kpi_card("Distancia", f"{row['distance_km']:.2f} km"), md=2),
             dbc.Col(kpi_card("Tiempo", format_duration(row["duration_sec"])), md=2),
-            dbc.Col(kpi_card("Ritmo medio", format_pace(row["avg_pace_min_km"]) + "/km", "", ACCENT), md=2),
+            dbc.Col(kpi_card("Ritmo medio", format_pace(disp_pace) + "/km", pace_sub, ACCENT), md=2),
             dbc.Col(kpi_card("FC media / máx",
-                             f"{int(row['avg_hr'])} / {int(row['max_hr']) if pd.notna(row.get('max_hr')) else '—'} bpm"
-                             if pd.notna(row.get("avg_hr")) else "—", "", ACCENT2), md=2),
+                             f"{int(disp_hr)} / {int(row['max_hr']) if pd.notna(row.get('max_hr')) else '—'} bpm"
+                             if pd.notna(disp_hr) else "—", hr_sub, ACCENT2), md=2),
             dbc.Col(kpi_card("Calorías",
                              f"{int(row['total_calories'])} kcal"
                              if pd.notna(row.get("total_calories")) else "—", "", "#F4D03F"), md=2),
@@ -1310,6 +1412,9 @@ def update_detail(selected_activity):
             dbc.Col(kpi_card("Desnivel ↓", desc_str, "pérdida de altitud", "#E67E22"), md=2),
         ], className="g-2 mt-2"),
     ], fluid=True, className="mb-3")
+    series_block = build_series_block(selected_activity)
+    if series_block is not None:
+        kpis = html.Div([kpis, series_block])
 
     if not act_laps.empty:
         rows = []
@@ -1384,6 +1489,10 @@ def update_detail(selected_activity):
         for d in lap_marks:
             fig_hr_pace.add_vline(x=d, line_width=1, line_dash="dot",
                                   line_color="rgba(255,255,255,0.2)")
+    if series_block is not None and series_info(selected_activity)[0] is not None:
+        for _, rep in series_info(selected_activity)[0].iterrows():
+            fig_hr_pace.add_vrect(x0=rep["start_km"], x1=rep["end_km"], fillcolor=ACCENT, opacity=0.12,
+                                  line_width=0, layer="below")
     fig_hr_pace.update_layout(
         template=PLOTLY_TEMPLATE, paper_bgcolor=CARD_BG, plot_bgcolor=CARD_BG,
         margin=dict(l=10, r=60, t=10, b=10), xaxis_title="Distancia (km)",
@@ -1425,11 +1534,11 @@ def update_detail(selected_activity):
             hovertemplate="Ritmo: %{customdata}/km<extra></extra>",
             customdata=[format_pace(p) for p in rec_pace["pace_min_km"]],
         ))
-        avg_p = row["avg_pace_min_km"]
+        avg_p = disp_pace
         if pd.notna(avg_p):
             fig_pace.add_hline(y=float(avg_p), line_width=1, line_dash="dash",
                                line_color="rgba(82,183,136,0.7)",
-                               annotation_text=f"Media {format_pace(avg_p)}/km", annotation_position="top right",
+                               annotation_text=f"Media {'series ' if summ_s else ''}{format_pace(avg_p)}/km", annotation_position="top right",
                                annotation_font=dict(color=ACCENT, size=10))
         for d in lap_marks:
             fig_pace.add_vline(x=d, line_width=1, line_dash="dot", line_color="rgba(255,255,255,0.2)")

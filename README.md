@@ -102,7 +102,7 @@ Versiones fijadas en `requirements.txt` (probadas con Python 3.13):
 - **Fecha**: por defecto selecciona el **mes anterior y el actual**. Arrastra los manejadores para cambiar el
   período; todos los tabs se actualizan al soltar.
 - **Distancia**: rango en km.
-- **Etiquetas**: selección múltiple (incluye «Sin etiqueta»); muestra las sesiones con alguna de ellas. Vacío = todas.
+- **Etiquetas**: selección múltiple (incluye «Sin etiqueta»); muestra las sesiones que tienen todas ellas a la vez. Vacío = todas.
 
 ### Tabs
 
@@ -117,9 +117,22 @@ Versiones fijadas en `requirements.txt` (probadas con Python 3.13):
 
 ### Etiquetas
 Cada sesión puede tener **varias** etiquetas (p. ej. «Trail» + «Tirada larga»). El filtro muestra las sesiones que tengan
-**cualquiera** de las etiquetas elegidas. Se guardan en `fit_raw/activity_tags.json` (variable `TAGS_FILE` para cambiar la ruta), así que sobreviven a
+**todas** las etiquetas elegidas. Se guardan en `fit_raw/activity_tags.json` (variable `TAGS_FILE` para cambiar la ruta), así que sobreviven a
 reinicios y reconstrucciones de la imagen y **viajan con la carpeta `fit_raw/`** al copiarla a otro equipo. No se sube a git.
 La tabla de edición ignora el filtro de etiquetas para que las filas no desaparezcan mientras editas.
+
+### Series (detección de repeticiones)
+Las sesiones con la etiqueta **Series** se analizan para separar los tramos de trabajo del descanso:
+se suaviza la velocidad (7 s), se calcula por sesión el umbral que mejor separa «lento» y «rápido» (método Otsu,
+solo con muestras en movimiento; parado cuenta siempre como descanso) y los tramos rápidos son las repeticiones.
+Se descartan ráfagas muy cortas (< 15 s o < 40 % de la repetición típica) y un calentamiento/enfriamiento largo a
+ritmo constante en el primer/último tramo. Si no hay al menos 2 repeticiones (ritmo uniforme) no se parte la sesión.
+
+- **Resumen / Progresión / Dinámica:** esas sesiones muestran el **ritmo y la FC de los tramos de trabajo**
+  (marcadas con «(series)» en el hover) en lugar de la media de toda la sesión.
+- **Detalle Actividad:** KPIs de series (ritmo, FC, nº de repeticiones, duración media, descanso medio), tabla por
+  repetición y las repeticiones sombreadas en la gráfica de FC/ritmo.
+- Los parámetros están al principio de la sección «Interval detection» de `data_loader.py`.
 
 ## Añadir nuevas actividades
 
@@ -129,7 +142,9 @@ La tabla de edición ignora el filtro de etiquetas para que las filas no desapar
 
 ## Notas técnicas
 
-- Las zonas de FC se calculan automáticamente sobre la **FC máxima real** registrada en los datos
+- Las zonas de FC usan el método Karvonen con valores **fijos** (no cambian al filtrar): FC máxima = la mayor de todas
+  las sesiones y FC en reposo = mediana de los últimos 90 días de Apple Health. Puedes fijarlas con las variables
+  `HR_MAX` y `HR_REST` (p. ej. `HR_MAX=190 HR_REST=48 docker compose up -d`, o `HR_MAX=190 python app.py`)
 - **Limpieza de outliers** al cargar: la FC fuera de 30–230 bpm (p. ej. 0 = sensor sin señal) se descarta y los
   ritmos más lentos de 12 min/km (paradas/caminata) se ignoran, de modo que no afectan a medias, gráficas ni zonas
   (`PACE_MAX_MIN_KM` y `HR_VALID_RANGE` en `data_loader.py`)
